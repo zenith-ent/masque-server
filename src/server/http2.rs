@@ -218,7 +218,7 @@ pub(super) fn build_acceptor(
 ) -> anyhow::Result<SslAcceptor> {
     let mut builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
         .context("failed to create HTTP/2 TLS context")?;
-    tls::configure_dynamic_identity(&mut builder, tls_identity);
+    tls::configure_dynamic_identity(&mut builder, tls_identity)?;
     builder.set_alpn_select_callback(|_, client| {
         select_next_proto(b"\x02h2", client).ok_or(AlpnError::NOACK)
     });

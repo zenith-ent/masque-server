@@ -385,7 +385,7 @@ pub async fn print_status(
             snapshot.compare(
                 path,
                 &cfg,
-                crate::server::runtime_tls_fingerprint(&cfg.tls)?,
+                crate::server::runtime_tls_fingerprints(&cfg.tls)?,
             )
         });
         match comparison {

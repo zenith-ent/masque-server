@@ -429,7 +429,7 @@ impl Server {
         let loaded_config = Arc::new(crate::runtime_status::LoadedConfig::new(
             &config,
             config_path.as_deref(),
-            tls.fingerprint(),
+            tls.fingerprints(),
         )?);
         let config_reload = config_reload_settings(&config, config_path);
 
@@ -1023,11 +1023,13 @@ fn reload_configuration(shared: &Shared) -> anyhow::Result<ReloadOutcome> {
                 .transpose()?,
         );
     }
-    let tls_identity =
-        tls::TlsIdentity::load(&reload.tls).context("failed to load replacement TLS identity")?;
+    let tls_identity = shared
+        .tls
+        .load_replacement(&reload.tls)
+        .context("failed to load replacement TLS identity")?;
     let loaded_config = shared
         .loaded_config
-        .prepare_reload(&config, tls_identity.fingerprint())?;
+        .prepare_reload(&config, shared.tls.fingerprints_for(&tls_identity))?;
 
     let registry = if reload.client_cert_enabled {
         let any_client_cert = any_client_cert_listener(&config);
@@ -1188,7 +1190,7 @@ fn build_quic_config(
     // data. Keep resumption, but lock Early Data off explicitly rather than
     // relying on quiche's current default.
     tls::disable_early_data(&mut builder);
-    tls::configure_dynamic_identity(&mut builder, tls_identity);
+    tls::configure_dynamic_identity(&mut builder, tls_identity)?;
     if let Some(roster) = client_certs {
         // quiche's normal peer verification cannot express the self-signed,
         // public-key roster, so install the
@@ -2280,10 +2282,10 @@ impl Shard {
     }
 }
 
-pub(crate) fn runtime_tls_fingerprint(
+pub(crate) fn runtime_tls_fingerprints(
     config: &crate::config::TlsSection,
-) -> anyhow::Result<[u8; 32]> {
-    Ok(tls::TlsIdentity::load(config)?.fingerprint())
+) -> anyhow::Result<crate::runtime_status::TlsFingerprints> {
+    Ok(tls::SharedTlsIdentity::new(config)?.fingerprints())
 }
 
 #[cfg(test)]

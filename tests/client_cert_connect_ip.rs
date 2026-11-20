@@ -35,6 +35,9 @@ mod cold_auth_fin;
 #[path = "client_cert_connect_ip/datagram_fin.rs"]
 mod datagram_fin;
 
+#[path = "support/ech.rs"]
+mod ech;
+
 #[path = "client_cert_connect_ip/error_responses.rs"]
 mod error_responses;
 
@@ -360,11 +363,6 @@ impl Client {
         stream_window: u64,
         connection_window: u64,
     ) -> anyhow::Result<Self> {
-        let socket = UdpSocket::bind(SocketAddr::new(source_ip, 0))?;
-        socket.connect(peer)?;
-        socket.set_read_timeout(Some(Duration::from_millis(50)))?;
-        let local = socket.local_addr()?;
-
         let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
         config.verify_peer(false);
         if let Some((cert, key)) = identity {
@@ -388,12 +386,26 @@ impl Client {
             config.enable_early_data();
         }
 
+        Self::connect_with_config(peer, source_ip, "masque.example", config, session)
+    }
+
+    fn connect_with_config(
+        peer: SocketAddr,
+        source_ip: std::net::IpAddr,
+        server_name: &str,
+        mut config: quiche::Config,
+        session: Option<&[u8]>,
+    ) -> anyhow::Result<Self> {
+        let socket = UdpSocket::bind(SocketAddr::new(source_ip, 0))?;
+        socket.connect(peer)?;
+        socket.set_read_timeout(Some(Duration::from_millis(50)))?;
+        let local = socket.local_addr()?;
         let mut scid = [0u8; quiche::MAX_CONN_ID_LEN];
         ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut scid)
             .map_err(|_| anyhow::anyhow!("RNG failed"))?;
 
         let mut quic = quiche::connect(
-            Some("masque.example"),
+            Some(server_name),
             &quiche::ConnectionId::from_ref(&scid),
             local,
             peer,
@@ -3417,4 +3429,80 @@ fn all_basic_rejections_are_counted_once() {
     );
     let hashed = failures() - baseline;
     assert_eq!(hashed, 5);
+}
+
+#[test]
+fn ech_http3_connect_ip_with_current_and_previous_keys_and_client_certificate() {
+    use boring::ssl::{SslContextBuilder, SslMethod, SslVerifyMode};
+    use std::sync::atomic::Ordering;
+
+    let dir = TempDir::new("ech-h3");
+    let key = p256_key();
+    let cert = ech::certificate(&key, &self_signed(&key, Some(ech::INNER_NAME)), true);
+    let (cert_path, key_path) = write_pem(dir.path(), "server", &key, &cert);
+    let peer_key = p256_key();
+    let peer_cert = self_signed(&peer_key, None);
+    let entry = ClientEntry {
+        name: "ech-peer".into(),
+        public_key: public_key_b64(&peer_key),
+        ipv4: Some(CLIENT_IPV4.into()),
+        ipv6: None,
+    };
+    let active = dir.path().join("active.pem");
+    let previous = dir.path().join("previous.pem");
+    let current_list = ech::write_bundle(&active, 11);
+    let previous_list = ech::write_bundle(&previous, 10);
+    let mut config = server_config(cert_path, key_path, ephemeral_addr(), vec![entry]);
+    config.tls.ech = Some(masque::config::EchSection {
+        server_name: ech::INNER_NAME.into(),
+        key_file: active,
+        previous_key_files: vec![previous],
+    });
+    let peer = spawn_server(config)[0];
+
+    for list in [&current_list, &previous_list] {
+        let mut tls = SslContextBuilder::new(SslMethod::tls()).unwrap();
+        tls.cert_store_mut().add_cert(cert.clone()).unwrap();
+        tls.set_verify(SslVerifyMode::PEER);
+        tls.set_certificate(&peer_cert).unwrap();
+        tls.set_private_key(&peer_key).unwrap();
+        let accepted = ech::configure_client(&mut tls, list);
+        let mut config =
+            quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, tls).unwrap();
+        config
+            .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
+            .unwrap();
+        config.set_initial_max_data(1_048_576);
+        config.set_initial_max_streams_bidi(4);
+        config.set_initial_max_streams_uni(4);
+        config.set_initial_max_stream_data_bidi_local(65_536);
+        config.set_initial_max_stream_data_uni(65_536);
+        config.set_max_idle_timeout(5_000);
+        let mut client = Client::connect_with_config(
+            peer,
+            Ipv4Addr::LOCALHOST.into(),
+            ech::INNER_NAME,
+            config,
+            None,
+        )
+        .unwrap();
+        let timeout = Duration::from_secs(5);
+        client.handshake(timeout).unwrap();
+        assert!(
+            accepted.load(Ordering::Relaxed),
+            "client must negotiate ECH"
+        );
+        client.init_h3().unwrap();
+        let stream = client.send_connect_ip("connect-ip").unwrap();
+        assert_eq!(client.response_status(stream, timeout).unwrap(), 200);
+        assert!(matches!(
+            client.capsules(stream, 2, timeout).as_slice(),
+            [
+                CapsuleFrame::AddressAssign(_),
+                CapsuleFrame::RouteAdvertisement(_)
+            ]
+        ));
+        client.quic.close(true, 0, b"").unwrap();
+        client.flush().unwrap();
+    }
 }

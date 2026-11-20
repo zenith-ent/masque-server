@@ -63,6 +63,21 @@ pub struct ServerSection {
 pub struct TlsSection {
     pub cert_path: PathBuf,
     pub key_path: PathBuf,
+    /// Encrypted Client Hello for TLS 1.3 on every listener.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ech: Option<EchSection>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EchSection {
+    /// Inner SNI that the server certificate must cover.
+    pub server_name: String,
+    /// RFC 9934 PEM bundle with the active ECH private key and ECHConfigList.
+    pub key_file: PathBuf,
+    /// Previous bundles retained for decryption while published configs expire.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous_key_files: Vec<PathBuf>,
 }
 
 /// How clients prove who they are.
@@ -476,6 +491,7 @@ impl Default for TlsSection {
         Self {
             cert_path: PathBuf::from("certs/server.crt"),
             key_path: PathBuf::from("certs/server.key"),
+            ech: None,
         }
     }
 }

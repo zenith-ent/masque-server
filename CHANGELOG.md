@@ -7,6 +7,14 @@ pre-1.0.
 
 ## Unreleased
 
+## 0.15.0 - 2026-11-20
+
+### Added
+
+- Add opt-in TLS 1.3 Encrypted Client Hello (ECH) on HTTP/2 and HTTP/3,
+  including CONNECT-IP. Load RFC 9934 key bundles, validate certificate
+  coverage, and retain previous keys during rotation.
+
 ## 0.14.23 - 2026-11-12
 
 ### Added

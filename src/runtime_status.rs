@@ -28,11 +28,16 @@ pub(crate) struct Snapshot {
 
 pub(crate) struct LoadedConfig(Mutex<Snapshot>);
 
+pub(crate) struct TlsFingerprints {
+    pub identity: [u8; 32],
+    pub ech: Option<[u8; 32]>,
+}
+
 impl LoadedConfig {
     pub(crate) fn new(
         config: &ServerConfig,
         path: Option<&Path>,
-        tls: [u8; 32],
+        tls: TlsFingerprints,
     ) -> anyhow::Result<Self> {
         let mut key = [0; 32];
         ring::rand::SystemRandom::new()
@@ -56,7 +61,7 @@ impl LoadedConfig {
     pub(crate) fn prepare_reload(
         &self,
         config: &ServerConfig,
-        tls: [u8; 32],
+        tls: TlsFingerprints,
     ) -> anyhow::Result<Snapshot> {
         let mut snapshot = self
             .0
@@ -91,7 +96,7 @@ fn file_digest(key: &[u8; 32], path: &Path) -> anyhow::Result<[u8; 32]> {
 fn sections(
     key: &[u8; 32],
     config: &ServerConfig,
-    tls: [u8; 32],
+    tls: TlsFingerprints,
 ) -> anyhow::Result<BTreeMap<String, Section>> {
     let mut value = serde_json::to_value(config)?;
     // Ignore disabled authentication material and the obsolete stealth switch.
@@ -116,7 +121,10 @@ fn sections(
         value["clients"] = serde_json::json!([]);
     }
     value["basic_credentials"] = serde_json::json!(credentials);
-    value["tls_identity"] = serde_json::json!(tls);
+    value["tls_identity"] = serde_json::json!(tls.identity);
+    if let Some(ech) = tls.ech {
+        value["tls"]["ech_config_fingerprint"] = serde_json::json!(ech);
+    }
     value
         .as_object()
         .unwrap()
@@ -142,7 +150,7 @@ impl Snapshot {
         &self,
         path: &Path,
         config: &ServerConfig,
-        tls: [u8; 32],
+        tls: TlsFingerprints,
     ) -> anyhow::Result<Vec<(String, &'static str)>> {
         anyhow::ensure!(
             self.version == env!("CARGO_PKG_VERSION"),

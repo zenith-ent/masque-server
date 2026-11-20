@@ -19,6 +19,8 @@ use tracing::warn;
 
 use crate::config::TlsSection;
 
+mod ech;
+
 /// Disable TLS 1.3 Early Data on a server context, even if a future quiche
 /// default or refactor starts enabling it elsewhere.
 ///
@@ -164,19 +166,45 @@ struct TlsSnapshot {
 /// The TLS identity selected by new handshakes.
 pub(super) struct SharedTlsIdentity {
     current: RwLock<Arc<TlsSnapshot>>,
+    ech: Option<ech::EchKeys>,
 }
 
 impl SharedTlsIdentity {
-    pub(super) fn fingerprint(&self) -> [u8; 32] {
-        self.load().identity.fingerprint()
+    pub(super) fn fingerprints(&self) -> crate::runtime_status::TlsFingerprints {
+        self.fingerprints_for(&self.load().identity)
     }
-    pub(super) fn new(identity: TlsIdentity) -> Self {
-        Self {
+
+    pub(super) fn fingerprints_for(
+        &self,
+        identity: &TlsIdentity,
+    ) -> crate::runtime_status::TlsFingerprints {
+        crate::runtime_status::TlsFingerprints {
+            identity: identity.fingerprint(),
+            ech: self.ech.as_ref().map(ech::EchKeys::fingerprint),
+        }
+    }
+    pub(super) fn new(config: &TlsSection) -> anyhow::Result<Self> {
+        let identity = TlsIdentity::load(config)?;
+        let ech = config.ech.as_ref().map(ech::EchKeys::load).transpose()?;
+        if let Some(ech) = &ech {
+            ech.validate_certificate(&identity.leaf)?;
+        }
+        Ok(Self {
             current: RwLock::new(Arc::new(TlsSnapshot {
                 identity,
                 generation: 0,
             })),
+            ech,
+        })
+    }
+
+    /// Validate renewal against the ECH configuration actually in use.
+    pub(super) fn load_replacement(&self, config: &TlsSection) -> anyhow::Result<TlsIdentity> {
+        let identity = TlsIdentity::load(config)?;
+        if let Some(ech) = &self.ech {
+            ech.validate_certificate(&identity.leaf)?;
         }
+        Ok(identity)
     }
 
     fn load(&self) -> Arc<TlsSnapshot> {
@@ -206,7 +234,10 @@ static INSTALLED_IDENTITY: LazyLock<Index<Ssl, Arc<TlsSnapshot>>> =
 pub(super) fn configure_dynamic_identity(
     builder: &mut SslContextBuilder,
     identities: Arc<SharedTlsIdentity>,
-) {
+) -> anyhow::Result<()> {
+    if let Some(ech) = &identities.ech {
+        ech.install(builder)?;
+    }
     // Allocate the ex-data index while building the listener, never lazily
     // inside the first ClientHello callback where a panic would cross the TLS
     // callback boundary.
@@ -225,4 +256,5 @@ pub(super) fn configure_dynamic_identity(
         ssl.set_ex_data(installed_identity, snapshot);
         Ok(())
     });
+    Ok(())
 }

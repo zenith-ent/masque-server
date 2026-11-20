@@ -559,9 +559,7 @@ pub(super) fn validate_server_config(
     // Once per listener rather than once per server: the authentication mode
     // decides which of two TLS contexts is built, so validating one listener's
     // would say nothing about another's.
-    let tls = Arc::new(tls::SharedTlsIdentity::new(tls::TlsIdentity::load(
-        &config.tls,
-    )?));
+    let tls = Arc::new(tls::SharedTlsIdentity::new(&config.tls)?);
     for plan in &listeners {
         let client_certs = plan
             .listener

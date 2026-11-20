@@ -42,6 +42,7 @@ the exact environment and commands.
 | Docker E2E | `scripts/e2e-test.sh` | TCP, UDP, IP/TUN, and container networking |
 | Client interop | `cargo test --test client_cert_connect_ip` | TLS certificate authentication, CONNECT-IP setup, mixed authentication, and live HTTP/3 TLS reload/rollback |
 | HTTP/2 interop | `cargo test --test http2_connect` | Real TLS/H2 CONNECT variants, multiple Basic accounts, both authentication modes, and credential/TLS reload rollback without dropping an established connection |
+| ECH | `cargo test --test http2_connect --test client_cert_connect_ip ech_` | Verified ECH and CONNECT-IP setup on both transports, previous keys and client certificates on HTTP/3, plain TLS on HTTP/2, and invalid configuration rejection |
 | End-user probe | `cargo test -p masque-probe` | Basic/certificate authentication over H2/H3 with live TCP payload and CONNECT-UDP echo round trips, explicit CONNECT-IP setup-only and forwarding-failure checks, and stable result/error handling on Linux and macOS |
 | Observability assets | `cargo test --test monitoring_assets` | Prometheus metric references and importable Grafana JSON |
 | Service shutdown | `tests/systemd-shutdown.sh` | Real SIGTERM/SIGINT handling and every-shard drain; Linux exercises two shards |

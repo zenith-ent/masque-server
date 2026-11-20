@@ -27,6 +27,9 @@ use masque::capsule::{CapsuleFrame, IpAddress, encoder};
 use masque::config::{AuthMode, BasicUser, ClientEntry, ListenerTransport, ServerConfig};
 use masque::server::Server;
 
+#[path = "support/ech.rs"]
+mod ech;
+
 #[path = "http2_connect/ip_uri.rs"]
 mod ip_uri;
 
@@ -1471,3 +1474,94 @@ async fn http2_malformed_address_requests_reset_only_the_request_stream() {
 
 #[path = "http2_connect/security.rs"]
 mod security;
+
+#[tokio::test]
+async fn ech_http2_connect_ip_and_plain_tls_share_a_listener() {
+    let files = TestFiles::new();
+    let key = p256_key();
+    let cert = ech::certificate(&key, &self_signed(&key), true);
+    std::fs::write(&files.cert, cert.to_pem().unwrap()).unwrap();
+    std::fs::write(&files.key, key.private_key_to_pem_pkcs8().unwrap()).unwrap();
+
+    let key_file = files.directory.join("ech.pem");
+    let list = ech::write_bundle(&key_file, 7);
+    let mut config = http2_config(&files);
+    config.ip_proxy.enabled = true;
+    config.tls.ech = Some(masque::config::EchSection {
+        server_name: ech::INNER_NAME.into(),
+        key_file,
+        previous_key_files: Vec::new(),
+    });
+    let (addr, server) = spawn_http2_config(config).await;
+    for offer_ech in [true, false] {
+        let mut connector = SslConnector::builder(SslMethod::tls_client()).unwrap();
+        connector.set_alpn_protos(b"\x02h2").unwrap();
+        connector.cert_store_mut().add_cert(cert.clone()).unwrap();
+        let accepted = offer_ech.then(|| ech::configure_client(&mut connector, &list));
+        let tls = tokio_boring::connect(
+            connector.build().configure().unwrap(),
+            ech::INNER_NAME,
+            TcpStream::connect(addr).await.unwrap(),
+        )
+        .await
+        .unwrap();
+        if let Some(accepted) = accepted {
+            assert!(
+                accepted.load(Ordering::Relaxed),
+                "client must negotiate ECH"
+            );
+        }
+        let (client, connection) = h2::client::handshake(tls).await.unwrap();
+        let driver = tokio::spawn(connection);
+        let mut client = client.ready().await.unwrap();
+        let (response, _) = client
+            .send_request(connect_ip_request("connect-ip"), false)
+            .unwrap();
+        let (setup, _body) = read_connect_ip_setup(response.await.unwrap()).await;
+        assert!(matches!(
+            setup.as_slice(),
+            [
+                CapsuleFrame::AddressAssign(_),
+                CapsuleFrame::RouteAdvertisement(_)
+            ]
+        ));
+        driver.abort();
+    }
+    server.abort();
+}
+
+#[test]
+fn ech_check_config_validates_public_names_and_key_matching() {
+    let files = TestFiles::new();
+    let key = p256_key();
+    let template = self_signed(&key);
+    let inner_only = ech::certificate(&key, &template, false);
+    std::fs::write(&files.cert, inner_only.to_pem().unwrap()).unwrap();
+    std::fs::write(&files.key, key.private_key_to_pem_pkcs8().unwrap()).unwrap();
+
+    let key_file = files.directory.join("ech.pem");
+    let stale_file = files.directory.join("stale.pem");
+    let active = ech::write_bundle(&key_file, 7);
+    let stale = ech::write_bundle(&stale_file, 8);
+    let mut config = http2_config(&files);
+    config.tls.ech = Some(masque::config::EchSection {
+        server_name: ech::INNER_NAME.into(),
+        key_file: key_file.clone(),
+        previous_key_files: Vec::new(),
+    });
+
+    let err = masque::server::validate_config(&config).unwrap_err();
+    assert!(format!("{err:#}").contains(ech::OUTER_NAME));
+    let cert = ech::certificate(&key, &template, true);
+    std::fs::write(&files.cert, cert.to_pem().unwrap()).unwrap();
+    masque::server::validate_config(&config).unwrap();
+
+    let pem = std::fs::read_to_string(&key_file).unwrap();
+    std::fs::write(
+        &key_file,
+        pem.replace(&STANDARD.encode(&active), &STANDARD.encode(&stale)),
+    )
+    .unwrap();
+    let err = masque::server::validate_config(&config).unwrap_err();
+    assert!(format!("{err:#}").contains("no supported config matching its private key"));
+}

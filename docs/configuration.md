@@ -153,6 +153,53 @@ The file contents or symlink targets may change between reloads. Changing
 `cert_path`, `key_path`, or CLI path overrides still requires a restart because
 the effective startup paths themselves are deliberately fixed.
 
+### Encrypted Client Hello
+
+Enable ECH for TLS 1.3 on HTTP/2 and HTTP/3 by adding this optional section:
+
+```toml
+[tls.ech]
+server_name = "proxy.example.com"
+key_file = "/etc/masque/certs/ech.pem"
+# previous_key_files = ["/etc/masque/certs/ech-previous.pem"]
+```
+
+Use an [RFC 9934](https://www.rfc-editor.org/rfc/rfc9934.html) PEM bundle
+containing an unencrypted X25519 PKCS#8 private key and an `ECHCONFIG` block
+with the matching RFC 9849 `ECHConfigList`. Give the ECH private key the same
+file protection as the certificate private key. For example, with an OpenSSL
+version that provides the `ech` command, generate a bundle with:
+
+```sh
+umask 077
+openssl ech -ech_version 0xfe0d -public_name public.example.com -out ech.pem
+```
+
+The server certificate needs DNS SANs for `server_name` (the client's inner SNI)
+and all configured ECH public names. The public name is the outer SNI for ECH.
+Run `masque-server --config /etc/masque/masque.toml check-config` to verify the
+keys and names before starting the service. Certificate renewals via `SIGHUP`
+also validate the names in use.
+
+Both peers must support ECH. Give the client the base64 data inside the
+`ECHCONFIG` block as its proxy ECH configuration, or publish it as the `ech`
+parameter in a DNS HTTPS or SVCB record for clients that discover it via
+[RFC 9848](https://www.rfc-editor.org/rfc/rfc9848.html). Keep the client
+configured to verify the inner name. Clients with no ECH configuration can
+still connect with ordinary TLS. ECH applies to the client-to-proxy handshake,
+including connections used for CONNECT, CONNECT-UDP, and CONNECT-IP.
+
+ECH key settings and file contents take effect after a restart. To rotate,
+make the new bundle active and list the previous bundle in
+`previous_key_files`. Restart all servers that handle the published name
+before distributing the new public configuration. Previous keys still decrypt
+ClientHellos, while retry responses advertise only configs from the active
+bundle. Remove previous keys after clients and DNS caches have picked up the
+new configuration. A client using TLS client-certificate authentication should
+receive the new config before the previous key is removed, since an
+[ECH-rejected handshake](https://www.rfc-editor.org/rfc/rfc9849.html#section-6.1.7)
+does not send client credentials and the listener still requires them.
+
 ## Authentication
 
 Each `[listeners.auth]` selects how clients prove who they are on that socket.

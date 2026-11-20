@@ -24,6 +24,12 @@ max_tunnels_per_connection = 100
 cert_path = "/etc/masque/certs/server.crt"
 key_path = "/etc/masque/certs/server.key"
 
+# Optional TLS 1.3 ECH for both HTTP/2 and HTTP/3. Restart to load ECH keys.
+# [tls.ech]
+# server_name = "proxy.example.com"
+# key_file = "/etc/masque/certs/ech.pem"
+# previous_key_files = []
+
 [[listeners]]
 listen_addr = "0.0.0.0:443"
 # "http3" binds UDP/QUIC and is the preferred high-performance transport.
